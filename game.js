@@ -9,30 +9,26 @@ let [cos, sin] = [Math.cos.bind(Math), Math.sin.bind(Math)];
 
 let gameState = "menu";
 
-let playerVel = null, playerRadius = null, gravity = null, jumpSpeed = null, step = null, accelFactor = null, FOV = null, trueFOV = null, mouseMovement = null, hp = null, showFPS = null, frameBounds = null, skyboxParallax = null;
+let playerVel = null, playerRadius = null, gravity = null, jumpSpeed = null, step = null, accelFactor = null, FOV = null, trueFOV = null, mouseMovement = null, hp = null, showFPS = null, frameBounds = null, skyboxParallax = null, cameraDistance = null, lightingVector = null, aimLine = null, sway = null, timer = null, currentLevel = null;
+let dragging = null, dragDistance = null, stopped = null, dragCap = null, fallingThresholds = null, score = null, holeGravity = null, friction = null, won = null;
 let mapBoundaries = null;
 let gameActive = false;
 
 let player = null;
 
 function resetValues() {
-  playerVel = [0, 0, 0]; playerRadius = 1.5; hp = 100; showFPS = true; showHits = true;
-  jumpSpeed = 1.5; gravity = .4, step = 0.1; accelFactor = 1.2; trueFOV = FOV = [/*Math.PI/1.7*/2.012742, Math.PI/2.2]; cameraDistance = 0; frameBounds = [10, 12]; mouseMovement = [0, 0];  skyboxParallax = .1;
-  hitShot = {state: 1, frames: 0};
+  playerVel = [0, 0, 0]; playerRadius = .25; hp = 100; showFPS = true; showHits = true;
+  jumpSpeed = 1.5; gravity = .1, step = 0.1; accelFactor = .4; trueFOV = FOV = [/*Math.PI/1.7*/2.012742, Math.PI/2.2]; cameraDistance = 5; frameBounds = [10, 14]; mouseMovement = [0, 0];  skyboxParallax = .1; lightingVector = [.0, -1, .5];
+  stopped = true; dragging = false; dragDistance = 0; timer = 0; dragCap = 1.25; fallingThresholds = [-10, -50]; holeGravity = 1/50; score = 0; friction = .9; won = false;
   shapes = [];
   player = copyShape(playerTemplate); if (cameraDistance > 0) shapes.push(player); 
-  map = copyShape(mapTemplate); shapes.push(map);
+  map = copyShape(currentLevel); shapes.push(map);
   skybox = copyShape(skyboxTemplate); shapes.push(skybox);
-  
-  mapBoundaries = [Math.max(...map.polys.map(poly => Math.max(...poly.map(pt => pt[0])))), 
-  Math.min(...map.polys.map(poly => Math.min(...poly.map(pt => pt[0])))),
-  Math.max(...map.polys.map(poly => Math.max(...poly.map(pt => pt[2])))),
-  Math.min(...map.polys.map(poly => Math.min(...poly.map(pt => pt[2])))),
-  Math.max(...map.polys.map(poly => Math.max(...poly.map(pt => pt[1]))))];
+  aimLine = new Shape([]); shapes.push(aimLine);
   gameActive = true;
   camAngle = [0, 0];
-  player.move([-10, 0, 0]);
-  camAngle[0] -= Math.PI/2
+  camAngle[1] -= Math.PI/6;
+  player.move([0, playerRadius, 0]);
 }
 
 function mapWhilePreserve(list, fn) {
@@ -63,7 +59,7 @@ function drawPixel(canvasData, depthBuffer, x, y, r, g, b, depth, viewmodelBuffe
   if ((((!viewmodel)||viewmodelBuffer[index]) && (depthBuffer[index] !== undefined && depthBuffer[index] < depth)) || (viewmodelBuffer[index]===true && !viewmodel) || depth < 0) return;
   depthBuffer[index] = depth;
   if (viewmodel) viewmodelBuffer[index] = true;
-  let fogIncrease = 0*3*Math.sqrt(Math.min(depth, 500));
+  let fogIncrease = 3*Math.sqrt(Math.min(depth, 20));
   canvasData.data[index + 0] = Math.min(r + fogIncrease, 255);
   canvasData.data[index + 1] = Math.min(g + fogIncrease, 255);
   canvasData.data[index + 2] = Math.min(b + fogIncrease, 255);
@@ -100,7 +96,7 @@ function drawTopTri(p1, p2, p3, canvasData, depthBuffer, mtl, viewmodelBuffer, v
             coordsFinal = [(Math.ceil(coordsFinal[0] * mtl[0].length)), -Math.floor(coordsFinal[1] * mtl.length)];
             if (coordsFinal[1] < 0) coordsFinal[1] += Math.ceil((mtl.length/(Math.abs(coordsFinal[1]))))*mtl.length+mtl.length;
             if (coordsFinal[0] < 0) coordsFinal[0] += Math.ceil((mtl[0].length/(Math.abs(coordsFinal[0]))))*mtl[0].length+mtl[0].length;
-            imageCoords = mtl[coordsFinal[1]%mtl.length][coordsFinal[0]%mtl[1].length];
+            imageCoords = mtl[coordsFinal[1]%mtl.length][coordsFinal[0]%mtl[1].length].map(n => n*mtl.lighting);
           } else imageCoords = mtl;
           //if (y === p2[1] || x === curXs[0] || x >= curXs[1] - 2) imageCoords = [0, 255, 0];
           drawPixel(canvasData, depthBuffer, Math.round(x), Math.round(y), imageCoords[0], imageCoords[1], imageCoords[2], depth, viewmodelBuffer, viewmodel
@@ -129,7 +125,7 @@ function drawBottomTri(p1, p2, p3, canvasData, depthBuffer, mtl, viewmodelBuffer
         interpolateDepth(p1.depth, p3.depth, y - (p1[1]), p3[1]-(p1[1]))];
         if (switched) depths = [depths[1], depths[0]];
       }
-      if (curXs[1]-curXs[0]>=2) {
+      if (curXs[1]-curXs[0]>=0) {
         let coords1, coords2;
         if (mtl.texture) {
           coords1 = interpolateCoords(p1, (switched ? p3 : p2), [curXs[0], y], p1.coords, (switched ? p3 : p2).coords, 1/p1.depth, 1/(switched ? p3 : p2).depth, 1/depths[0]);
@@ -145,7 +141,7 @@ function drawBottomTri(p1, p2, p3, canvasData, depthBuffer, mtl, viewmodelBuffer
               coordsFinal = [(Math.ceil(coordsFinal[0] * mtl[0].length)), -Math.floor(coordsFinal[1] * mtl.length)];
               if (coordsFinal[1] < 0) coordsFinal[1] += Math.ceil((mtl.length/(Math.abs(coordsFinal[1]))))*mtl.length+mtl.length;
               if (coordsFinal[0] < 0) coordsFinal[0] += Math.ceil((mtl[0].length/(Math.abs(coordsFinal[0]))))*mtl[0].length+mtl[0].length;
-              imageCoords = mtl[coordsFinal[1]%mtl.length][coordsFinal[0]%mtl[1].length];
+              imageCoords = mtl[coordsFinal[1]%mtl.length][coordsFinal[0]%mtl[1].length].map(n => n*mtl.lighting);
             } else imageCoords = mtl;
             
             //if (y === p2[1] || x === curXs[0] || x >= curXs[1] - 2) imageCoords = [0, 255, 0];
@@ -180,11 +176,12 @@ function drawTri(p1, p2, p3, canvasData, depthBuffer, mtl, viewmodelBuffer, view
   if (pts[0][1] === pts[1][1]) {drawBottomTri(pts[2], pts[1], pts[0], canvasData, depthBuffer, mtl, viewmodelBuffer, viewmodel);return;}
   let p4 = [pts[0][0] + ((pts[1][1] - pts[0][1]) / (pts[2][1] - pts[0][1])) * (pts[2][0] - pts[0][0]), pts[1][1]];
   p4.depth = interpolateDepth(pts[0].depth, pts[2].depth, p4[1]-pts[0][1], pts[2][1]-pts[0][1]);
-  p4.coords = interpolateCoords(pts[0], pts[2], p4, pts[0].coords, pts[2].coords, 1/pts[0].depth, 1/pts[2].depth, 1/p4.depth);
+  if (mtl.texture) p4.coords = interpolateCoords(pts[0], pts[2], p4, pts[0].coords, pts[2].coords, 1/pts[0].depth, 1/pts[2].depth, 1/p4.depth);
   drawTopTri(pts[0], pts[1], p4, canvasData, depthBuffer, mtl, viewmodelBuffer, viewmodel);
   drawBottomTri(pts[2], p4, pts[1], canvasData, depthBuffer, mtl, viewmodelBuffer, viewmodel);
 }
-function drawPoly(pts, canvasData, depthBuffer, mtl, viewmodelBuffer, viewmodel=false) {
+function drawPoly(pts, canvasData, depthBuffer, mtl, viewmodelBuffer, viewmodel=false, lighting) {
+  mtl.lighting = lighting;
   for (let i = 0; i < pts.length-2; i++) {
     drawTri(pts[0], pts[i+1], pts[i+2], canvasData, depthBuffer, mtl, viewmodelBuffer, viewmodel);
   }
@@ -242,7 +239,7 @@ class Shape {
       let newPoly = poly.map(pt => pt.map((el, idx) => Number(el)+offset[idx]));
       newPoly.mtl = poly.mtl;
       newPoly.cross = poly.cross;
-      newPoly.forEach((pt, idx) => pt.coords = this.polys[idx].coords);
+      newPoly.forEach((pt, idx) => pt.coords = poly[idx].coords);
       return newPoly;
     });
     if (this.rotatedPolys !== null) {
@@ -250,7 +247,7 @@ class Shape {
         let newPoly = poly.map(pt => pt.map((el, idx) => Number(el)+offset[idx]));
         newPoly.mtl = poly.mtl;
         newPoly.cross = poly.cross;
-        newPoly.forEach((pt, idx) => pt.coords = this.polys[idx].coords);
+        newPoly.forEach((pt, idx) => pt.coords = poly[idx].coords);
         return newPoly;
       });
     }
@@ -300,7 +297,7 @@ function dotProduct(vec1, vec2) {
   return vec1.reduce((a, b, idx) => a+b*vec2[idx], 0);
 }
 function plus(pt1, pt2) {
-  return pt1.map((n, idx) => n+pt2[idx]);
+  return pt1.map((n, idx) => Number(n)+Number(pt2[idx]));
 }
 function minus(pt1, pt2) {
   return pt1.map((n, idx) => n-pt2[idx]);
@@ -459,7 +456,10 @@ function clear(canvas) {
 let lastTime = performance.now();
 
 setInterval(function() {
-  if (gameState === "playing" && !isLoading) {
+  canvas.style.width = window.innerWidth + "px";
+  canvas.style.height = window.innerHeight + "px";
+  canvas.style.cursor = "auto";
+  if (gameState === "playing" && !isLoading && !won) {
     //if we were just playing and now we are not, we have just paused
     if (keys["p"] || document.pointerLockElement === null) gameState = "justPaused";
   }
@@ -469,63 +469,93 @@ setInterval(function() {
     //dynamically maintain the resolution
     canvas.width = window.innerWidth/canvasDivision;
     canvas.height = window.innerHeight/canvasDivision;
+    timer += 1;
     let cameraSpeed = 1;
     camFollow = player;
-    if (camFollow === null) {} else if (hp > 0) {
-      camPos[0] = camFollow.offset[0] + Math.sin(camAngle[0]) * cameraDistance * Math.cos(camAngle[1]);
-      camPos[1] = camFollow.offset[1] - Math.sin(camAngle[1]) * cameraDistance + cameraDistance/5 + .3;
-      camPos[2] = camFollow.offset[2] - Math.cos(camAngle[0]) * cameraDistance * Math.cos(camAngle[1]);
-      player.turn([camAngle[0]-player.rotate[0], 0, 0]);
-
-      //acceleration and movement from key inputs
-      let accelVec = [0, 0];
-      if (keys["w"]) accelVec = plus(accelVec, [-Math.sin(camAngle[0]), Math.cos(camAngle[0])]);
-      if (keys["s"]) accelVec = plus(accelVec, [Math.sin(camAngle[0]), -Math.cos(camAngle[0])]);
-      if (keys["a"]) accelVec = plus(accelVec, [Math.cos(camAngle[0]), Math.sin(camAngle[0])]);
-      if (keys["d"]) accelVec = plus(accelVec, [-Math.cos(camAngle[0]), -Math.sin(camAngle[0])]);
-      let horizVel = times(plus([playerVel[0], playerVel[2]], times(unit(accelVec), accelFactor*(keys["shift"] ? 0.5 : 1))), .5);
-      //if (keys["e"]) player.move([0, -.03, 0]);
-      //if (keys["z"]) player.move([0, .03, 0]);
-      playerVel = [horizVel[0], playerVel[1], horizVel[1]];
-      let speed = distance([horizVel[0], Math.max(Math.abs(playerVel[1])-.2, 0), horizVel[1]]);
-      //2x detailed physics - check horizontal movement first then vertical
-      let physicsSteps = 2;
-      for (let i = 0; i < physicsSteps; i++) {
-        player.move([playerVel[0]/physicsSteps, 0, playerVel[2]/physicsSteps]);
-        for (let poly of map.polys) {
-          let collides = sphereHitsPoly(player.offset, playerRadius, poly, true);
-          if (collides !== false) {
-            while (sphereHitsPoly(player.offset, playerRadius, poly)) {
-              player.move(collides);
-              playerVel = [playerVel[0]+collides[0], playerVel[1], playerVel[2]+collides[2]];
-            }
+    if (camFollow === null) {} else {
+      if (keys["r"] && !won) {
+        keys["r"] = false;
+        resetValues();
+      }
+      let camFollowVector = [Math.sin(camAngle[0]) * cameraDistance * Math.cos(camAngle[1]), - Math.sin(camAngle[1]) * cameraDistance + cameraDistance/5 + .3, - Math.cos(camAngle[0]) * cameraDistance * Math.cos(camAngle[1])];
+      let cameraClipping = findRaycast([camFollow.offset[0], camFollow.offset[1]+playerRadius, camFollow.offset[2]], [map], camFollowVector);
+      if (cameraClipping !== null) camFollowVector = plus(times(unit(camFollowVector), Math.min(cameraClipping.distance * .7, cameraDistance)), [0, playerRadius, 0]);
+      camPos = plus(camFollow.offset, camFollowVector);
+      if (!won) {
+        if (distance(playerVel) < .02) {
+          if (stopped === false) stopped = 0;
+          else if (stopped !== true) {
+            stopped += 1;
+            if (stopped > 2) {stopped = true; playerVel = [0, 0, 0]; mouseDown = false;}
           }
-        }
-        player.move([0, playerVel[1]/physicsSteps, 0]);
-        let hitGround = false;
-        if (playerVel[1] !== 0) {
-          for (let poly of map.polys) {
-            let collides = sphereHitsPoly(player.offset, playerRadius, poly)
-            if (collides !== false) {
-              if (playerVel[1] < 0) {
-                if (-playerVel[1] > 3) {
-                  hp -= -playerVel[1]*4;
+        } else {stopped = false;}
+          
+        //physics (collisions)
+        if (!stopped) {
+          dragging = false;
+          let physicsSteps = 30;
+          for (let i = 0; i < physicsSteps; i++) {
+            playerVel[1] -= gravity/physicsSteps;
+            player.move(times(playerVel, 1/physicsSteps));
+            for (let poly of map.polys) {
+              let collides = sphereHitsPoly(player.offset, playerRadius, poly, true);
+              if (collides !== false) {
+                while (sphereHitsPoly(player.offset, playerRadius, poly)) {
+                  player.move(times(unit(collides), .01));
                 }
-                hitGround = true;
+                collides = unit(collides);
+                playerVel = times(minus(playerVel, times(collides, 2 * dotProduct(playerVel, collides))), friction);
+                //^^^ https://math.stackexchange.com/questions/13261
+                playerVel[1] *= .7;
               }
-              while (sphereHitsPoly(player.offset, playerRadius, poly)) {
-                player.move([0, playerVel[1] <= 0 ? step : -step, 0]);
+            }
+            let hole = map.polys.filter(poly => poly.mtl === "hole")[0];
+            if (hole !== undefined) {
+              hole = center(hole);
+              if (distance(player.offset, hole) < 1) {
+                if (distance(player.offset, hole) < .5) {
+                  player.move(minus(hole, player.offset));
+                  player.move([0, playerRadius, 0]);
+                  won = true;
+                  if (document.pointerLockElement !== null) document.exitPointerLock();
+                } else {
+                  let vectorToHole = minus(hole, player.offset);
+                  playerVel = plus(playerVel, times(vectorToHole, 1/distance(vectorToHole) * holeGravity));
+                }
               }
-              playerVel[1] = 0;
-              break;
             }
           }
-        }
-        if (hitGround && keys[" "]) {
-          playerVel[1] += jumpSpeed;
-        } else {
-          playerVel[1] -= gravity/physicsSteps;
         } 
+        // draw the arrow for aiming, and launch the golf ball upon release
+        else if (stopped === true) {
+          if (mouseDown && !dragging) {dragging = true; dragDistance = 0; timer = 0;}
+          if (dragging) {
+            dragDistance = Math.min(Math.max(0, dragDistance + (mouseMovement[1] < 0 ? mouseMovement[1] * 2 : mouseMovement[1])), dragCap);
+            if (shapes.includes(aimLine)) shapes.splice(shapes.indexOf(aimLine), 1);
+            if (dragDistance > 0) {
+              sway = Math.sin((timer-1) / 3) * .1 * Math.sqrt(dragDistance); 
+              aimLine = new Shape([[[-.2*Math.sqrt(dragDistance), 0, 0], [.2*Math.sqrt(dragDistance), 0, 0], [.2*Math.sqrt(dragDistance), 0, dragDistance * 5], [-.2*Math.sqrt(dragDistance), 0, dragDistance * 5]],
+              [[.4*Math.sqrt(dragDistance), 0, dragDistance * 5], [0, 0, 1.5*Math.sqrt(dragDistance) + 5*dragDistance], [-.4*Math.sqrt(dragDistance), 0, dragDistance * 5]]]);
+              aimLine.polys.forEach(poly => poly.mtl = "red");
+              aimLine.updateCrossProducts();
+              aimLine.move(player.offset); aimLine.move([0, -.05, 0]);
+              aimLine.turn([camAngle[0], 0, 0]);
+              aimLine.moveInDirection(.3);
+              aimLine.updateCrossProducts(true);
+              aimLine.turn([sway, 0, 0]);
+              aimLine.overallDepth = times(plus(aimLine.rotatedPolys[0][0], aimLine.rotatedPolys[0][1]), .5);
+              shapes.push(aimLine);
+            }
+          }
+          if (!mouseDown && dragging) {
+            if (dragDistance > 0) {
+              playerVel = times([-Math.sin(camAngle[0]+sway), 0, Math.cos(camAngle[0]+sway)], dragDistance * 3);
+              if (shapes.includes(aimLine)) shapes.splice(shapes.indexOf(aimLine), 1);
+              score += 1;
+            }
+            dragging = false;
+          }
+        }
       }
     }
 
@@ -539,14 +569,17 @@ setInterval(function() {
     //convert each shape into a list of transformed polygons
     let renderList = [];
     for (let shape of shapes) {
+      if (shape.overallDepth !== undefined && shape.overallDepth.constructor !== Number) {
+        shape.overallDepth = transformCamera.multiply(matrix.from([[shape.overallDepth[0]-camPos[0]], [shape.overallDepth[1]-camPos[1]], [shape.overallDepth[2]-camPos[2]]])).list[2][0]
+      }
       for (let poly of (shape.rotatedPolys === null ? shape.polys : shape.rotatedPolys)) {
         let pts = poly.map(pt => [[pt[0]], [pt[1]], [pt[2]]]);
         pts.forEach((pt, idx) => pt.coords = poly[idx].coords);
-        let cross = poly.cross; if (shape.viewmodel) cross = unit(plus(times(vecFromAngle(camAngle), .4), cross));
-        let dot = dotProduct(cross, unit([.5, -1, .5]));
+        let cross = poly.cross; if (shape.viewmodel&& !shape.still3d) cross = unit(plus(times(vecFromAngle(camAngle), .4), cross));
+        let dot = dotProduct(cross, unit(lightingVector));
 
         let cameraDot = dotProduct(cross, unit([pts[1][0]-camPos[0], pts[1][1]-camPos[1], pts[1][2]-camPos[2]]));
-        if (!shape.viewmodel) {
+        if (!shape.viewmodel || shape.still3d) {
           pts = pts.map(pt => {
             let transformed = shape.skybox ? transformCamera.multiply(matrix.from([[pt[0]-camPos[0]*skyboxParallax], [pt[1]-camPos[1]*skyboxParallax], [pt[2]-camPos[2]*skyboxParallax]])).list : transformCamera.multiply(matrix.from([[pt[0]-camPos[0]], [pt[1]-camPos[1]], [pt[2]-camPos[2]]])).list;
             transformed.coords = pt.coords;
@@ -570,7 +603,7 @@ setInterval(function() {
             let [last, curr] = [mapWhilePreserve(pts[(idx-1)%pts.length], Number), mapWhilePreserve(pts[idx%pts.length], Number)];
             let ratio = (threshold-curr[2])/(last[2]-curr[2]);
             let newPt = [curr[0]+ratio*(last[0]-curr[0]),curr[1]+ratio*(last[1]-curr[1]),threshold];
-            newPt.coords = [curr.coords[0] + (last.coords[0]-curr.coords[0]) * ratio, curr.coords[1] + (last.coords[1]-curr.coords[1]) * ratio];
+            if (materials[poly.mtl]?.texture) newPt.coords = [curr.coords[0] + (last.coords[0]-curr.coords[0]) * ratio, curr.coords[1] + (last.coords[1]-curr.coords[1]) * ratio];
 
             while (pts[idx%pts.length][2] <= 0) idx++;
             if (!newPts.includes(pts[idx%pts.length])) lastPt = pts[idx%pts.length];
@@ -578,7 +611,7 @@ setInterval(function() {
             ratio = (threshold-curr[2])/(last[2]-curr[2]);
             newPts.push(newPt);
             newPts.push([curr[0]+ratio*(last[0]-curr[0]),curr[1]+ratio*(last[1]-curr[1]),threshold]);
-            newPts.at(-1).coords = [curr.coords[0] + (last.coords[0]-curr.coords[0]) * ratio, curr.coords[1] + (last.coords[1]-curr.coords[1]) * ratio];
+            if (materials[poly.mtl]?.texture) newPts.at(-1).coords = [curr.coords[0] + (last.coords[0]-curr.coords[0]) * ratio, curr.coords[1] + (last.coords[1]-curr.coords[1]) * ratio];
             while (pts[idx%(pts.length)] != newPts[0]) {
               newPts.push(pts[idx%(pts.length)]);
               idx++;
@@ -589,14 +622,17 @@ setInterval(function() {
         
         let centroid = center(pts);
         
-        if (!shape.viewmodel && cameraDot > 0) dot = -dot;
+        if ((!shape.viewmodel || shape.still3d)&& cameraDot > 0) dot = -dot;
         let rgb = null;
         if (poly.mtl in materials) rgb = materials[poly.mtl];
         else rgb = [128, 128, 128];
         if (!rgb.texture) rgb = rgb.map(n => n*(1-dot/2.5));
+        else if (shape.skybox !== true) pts.lighting = (1-dot/2.5);
+        else pts.lighting = 1;
         pts.mtl = rgb;
         pts.meanZ = Math.sqrt((centroid[0])**2+(centroid[1])**2+(centroid[2])**2);
         pts.viewmodel = shape.viewmodel === true;
+        pts.overallDepth = shape.overallDepth;
         renderList.push(pts);
       }
     }
@@ -607,7 +643,7 @@ setInterval(function() {
     let depthBuffer = Object.create(null);
     let viewmodelBuffer = Object.create(null);
     for (let pts of renderList) {
-      drawPoly(pts.map(pt => {let newPt = project(pt); newPt.coords = pt.coords; newPt.depth = 1/pt[2][0];  return newPt;}), canvasData, depthBuffer, pts.mtl, viewmodelBuffer, pts.viewmodel);
+      drawPoly(pts.map(pt => {let newPt = project(pt); newPt.coords = pt.coords; newPt.depth = 1/pt[2][0]; if (pts.overallDepth !== undefined) newPt.depth = 1/pts.overallDepth; return newPt;}), canvasData, depthBuffer, pts.mtl, viewmodelBuffer, pts.viewmodel, pts.lighting);
     }
     //draw sky (solid color)
     for (let i = 0; i < canvasData.height; i++) {
@@ -628,37 +664,49 @@ setInterval(function() {
     lastTime = performance.now();
     let fps = 1000/difference;
     if (showFPS) drawText(ctx, "FPS: " + Math.round(fps), canvas.width-114/canvasDivision, canvas.height-24/canvasDivision, 30/canvasDivision, "black", "left");
-    
-    //check for game over
-    if (gameActive) {
-      if (hp <= 0) {
-        gameActive = false; resume.visible = false;
-        shapes.splice(shapes.indexOf(gun), 1);
+    drawText(ctx, "Score: " + score, 10/canvasDivision, 30/canvasDivision, 40/canvasDivision, "black", "left");
+
+    if (won) {
+      camAngle[0] += 0.02;
+      drawText(ctx, "You scored in only " + score + " stroke" + (score === 1 ? "!" : "s!"), canvas.width/2, 100/canvasDivision, 70/canvasDivision, `rgb(${255*Math.cos(timer/5)}, ${255*Math.sin(timer/5*1.5)}, ${255*Math.cos(timer/5*1.2)})`, "center", "Arial");
+      let btns = Button.buttons.filter(btn => btn.props.targetScreen === "playing");
+      for (let btn of btns) {
+        if ((btn !== nextLevel || levelTemplates.indexOf(currentLevel) < (levelTemplates.length - 1))) {
+          btn.draw();
+          if (btn.isHovering(mouseX, mouseY) && mouseDown ) {
+            btn.props.event();
+          }
+        }
       }
-      
-    } else {
-      
+    }
+    
+    //check if we fell off the map
+    if (player.offset[1] < fallingThresholds[0]) {
+      ctx.fillStyle = `rgba(0, 0, 0, ${Math.min(Math.max(0, (fallingThresholds[0]-player.offset[1])/(fallingThresholds[0]-fallingThresholds[1])), 1)}`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (player.offset[1] < fallingThresholds[1]) resetValues();
     }
     //maintain a specific framerate by changing resolution
     if (fps < frameBounds[0]) canvasDivision += 0.25;
     if (fps > frameBounds[1] && canvasDivision >= 1.25) canvasDivision -= 0.25;
   }
-  canvas.style.cursor = "auto";
   if (gameState === "paused") {
     //if mouse down while paused, resume
     if (mouseDown) {
       (async function() {
         await canvas.requestPointerLock();
-        if (document.pointerLockElement === canvas) {
+        document.addEventListener("pointerlockchange", function start() {
           gameState = "playing";
-          mouseDown = false;
-        }
+          mouseDown = dragging;
+          document.removeEventListener("pointerlockchange", start);
+        });
       })();
     }
   }
   if (gameState === "justPaused") {
     //pause screen
     document.exitPointerLock();
+    mouseDown = false;
     gameState = "paused";
     ctx.fillStyle = "rgba(175, 175, 175, 0.8)";
     ctx.beginPath();
@@ -673,26 +721,27 @@ setInterval(function() {
     gameState = "menu";
     document.exitPointerLock();
   }
-  if (gameState === "menu" || gameState === "credits" || gameState === "instructions") {
+  if (gameState === "menu" || gameState === "credits" || gameState === "instructions" || gameState === "levels") {
     //draw and handle buttons
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
+    canvasDivision = 1;
     clear(canvas);
     ctx.fillStyle = "lightblue";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     if (gameState === "menu") {
       let [width, height] = [getComputedStyle(canvas).width.replace("px", ""), getComputedStyle(canvas).height.replace("px", "")].map(Number);
-      ctx.drawImage(thumbnail, width/2-(width+50)/2-(mouseX-50)/2, height/2 - (height+50)/2-(mouseY-50)/2, width+50, height+50);
-      ctx.drawImage(logo, canvas.width/2-logo.width*.65, 30, logo.width, logo.height);
+      ctx.drawImage(thumbnail, width/2-(mouseX+width-50)/2-25, height/2 - (height+50)/2-(mouseY-50)/2, width+50, height+50);
+      ctx.drawImage(logo, canvas.width/2-logo.width*.5, 30, logo.width, logo.height);
     }
     let hitButton = false;
-    for (let button of Button.buttons) {
-      if (button.visible && button.props.targetScreen === gameState) {
-        button.draw();
-        if (mouseDown && button.isHovering(mouseX, mouseY)) {
-          button.props.event();
-          hitButton = true;
-        }
+    let clickableButtons = Button.buttons.filter(btn => btn.visible && btn.props.targetScreen === gameState);
+    for (let button of clickableButtons) {
+      button.draw();
+      if (mouseDown && button.isHovering(mouseX, mouseY)) {
+        button.props.event();
+        hitButton = true;
+        mouseDown = false;
       }
     }
     if (!hitButton) mouseDown = false;
@@ -705,26 +754,32 @@ setInterval(function() {
     drawText(ctx, "Sky Box - Sunny Day by Chad Wolfe licensed CC-BY 3.0, CC-BY-SA 3.0, GPL 3.0, GPL 2.0, OGA-BY 3.0"
 , canvas.width/2, 120, 20, "black", "center", "Trebuchet MS")
     drawText(ctx, "via Open Game Art (https://opengameart.org/content/sky-box-sunny-day)", canvas.width/2, 145, 20, "black", "center", "Trebuchet MS");
+    drawText(ctx, "Skybox Texture mapping Panorama via PngWing (https://www.pngwing.com/en/free-png-kyycs)", canvas.width/2, 170, 20, "black", "center", "Trebuchet MS");
   }
   if (gameState === "instructions") {
     drawText(ctx, "Instructions", canvas.width/2, 30, 40, "black", "center", "Helvetica");
-    //!!!!!!TODO!!!!!!!!!: add instructions
-    drawText(ctx, "working in progress", canvas.width/2, 70, 20, "black", "center", "Trebuchet MS");
+    drawText(ctx, "Use mouse to aim camera, drag mouse to power up a shot, \"r\" to restart the level", canvas.width/2, 70, 20, "black", "center", "Trebuchet MS");
+  }
+  if (gameState === "levels") {
+    drawText(ctx, "Level Select", canvas.width/2, 30, 40, "black", "center", "Helvetica");
   }
 }, 50);
 
 //mouse movement and events
 canvas.addEventListener("mousemove", function(e) {
-  if (gameState === "playing") {
+  if (gameState === "playing" && document.pointerLockElement !== null) {
     let factor = FOV[0] / trueFOV[0];
-    camAngle[0] += e.movementX/200 * factor;
-    camAngle[1] = Math.max(Math.min(camAngle[1]-e.movementY/200*factor, Math.PI/2), -Math.PI/2);
+    if (!dragging) camAngle[0] += e.movementX/200 * factor;
+    if (!dragging) camAngle[1] = Math.max(Math.min(camAngle[1]-e.movementY/200*factor, Math.PI/2-Math.PI/3), -Math.PI/2);
     mouseMovement = [e.movementX/200, e.movementY/200];
   } else {
     let bd = canvas.getBoundingClientRect();
     let mousePos = [(e.clientX - bd.left)*canvas.width/Number(getComputedStyle(canvas).width.replace("px", "")), (e.clientY - bd.top)*canvas.height/Number(getComputedStyle(canvas).height.replace("px", ""))];
     mouseX = mousePos[0]/canvas.width*100; mouseY = mousePos[1]/canvas.height*100;
   }
+});
+document.addEventListener("pointerlockerror", function(e) {
+  console.log(e);
 });
 canvas.addEventListener("mousedown", function(e) {
   if (e.button !== 0) {
@@ -760,62 +815,98 @@ class Button {
 		ctx.textAlign = "center";
 		ctx.textBaseline = 'middle';
 		drawText(ctx, this.props.text.value, (this.props.left+this.props.width/2)*canvas.width/100, 
-      (this.props.top+this.props.height/2)*canvas.height/100, this.props.text.size, "black", "center", this.props.text.font);
+      (this.props.top+this.props.height/2)*canvas.height/100, this.props.text.size/canvasDivision, "black", "center", this.props.text.font);
 		ctx.textBaseline = 'alphabetic';
 		if (this.isHovering(mouseX, mouseY)) canvas.style.cursor = ("pointer");
 	}
 }
-let play = new Button(40, 72.5, 15, 10, "rgb(150, 150, 150)", {value:"Begin Mission", font:"Courier, monospace", size:20}, "menu", async function() {
-  await canvas.requestPointerLock();
-  if (document.pointerLockElement === canvas) {
-    resetValues();
-    canvasDivision = 5;
-    gameState = "playing";
-    resume.visible = true;
-    mouseDown = false;
-  }
+let play = new Button(33, 68.5, 15, 10, "rgb(150, 150, 150)", {value:"Levels", font:"Courier, monospace", size:20}, "menu", function() {
+  gameState = "levels";
 });
-let resume = new Button(40, 60, 15, 10, "rgb(150, 150, 150)", {value:"Resume Mission", font:"Courier, monospace", size:20}, "menu", async function() {
-  await canvas.requestPointerLock();
-  if (document.pointerLockElement === canvas) {
-    gameState = "playing";
-    mouseDown = false;
-  }
+let ogMiniGolf = new Button(52, 68.5, 15, 10, "rgb(150, 150, 150)", {value:"OG Minigolf", font:"Courier, monospace", size:20}, "menu", function() {
+  let link = document.createElement("a");
+  link.href = "https://academy.cs.cmu.edu/sharing/blackSeal3688";
+  link.target = "_blank";
+  link.click();
 });
-resume.visible = false;
-let credits = new Button(51.5, 85, 15, 10, "rgb(150, 150, 150)", {value:"Credits", font:"Courier, monospace", size:20}, "menu", function() {
+let credits = new Button(52, 85, 15, 10, "rgb(150, 150, 150)", {value:"Credits", font:"Courier, monospace", size:20}, "menu", function() {
   gameState = "credits";
-  mouseDown = false;
 });
-let instructions = new Button(29.5, 85, 15, 10, "rgb(150, 150, 150)", {value:"Instructions", font:"Courier, monospace", size:20}, "menu", function() {
+let instructions = new Button(33, 85, 15, 10, "rgb(150, 150, 150)", {value:"Instructions", font:"Courier, monospace", size:20}, "menu", function() {
   gameState = "instructions";
-  mouseDown = false;
 });
 let github = new Button(87, 88, 12, 10, "rgb(150, 150, 150)", {value:"Github", font:"Courier, monospace", size:20}, "menu", function() {
   let link = document.createElement("a");
   link.href = "https://github.com/gosoccerboy5/minigolf";
   link.target = "_blank";
   link.click();
-  mouseDown = false;
 });
-let planeBattle = new Button(1, 88, 12, 10, "rgb(150, 150, 150)", {value:"Entry Breach", font:"Courier, monospace", size:20}, "menu", function() {
+let entryBreach = new Button(1, 88, 12, 10, "rgb(150, 150, 150)", {value:"Entry Breach", font:"Courier, monospace", size:20}, "menu", function() {
   let link = document.createElement("a");
   link.href = "https://gosoccerboy5.github.io/entry-breach/";
   link.target = "_blank";
   link.click();
-  mouseDown = false;
 });
 let backhome = new Button(42.5, 70, 15, 10, "rgb(150, 150, 150)", {value:"Home", font:"Courier, monospace", size:20}, "credits", function() {
   gameState = "menu";
-  mouseDown = false;
 });
 let backhome2 = new Button(42.5, 70, 15, 10, "rgb(150, 150, 150)", {value:"Home", font:"Courier, monospace", size:20}, "instructions", function() {
   gameState = "menu";
-  mouseDown = false;
 });
+let backhome3 = new Button(42.5, 85, 15, 10, "rgb(150, 150, 150)", {value:"Home", font:"Courier, monospace", size:20}, "levels", function() {
+  gameState = "menu";
+});
+let backhome4 = new Button(60, 60, 15, 10, "rgb(150, 150, 150)", {value:"Home", font:"Courier, monospace", size:50}, "playing", function() {
+  gameState = "menu";
+});
+let restartLevel = new Button(25, 60, 15, 10, "rgb(150, 150, 150)", {value:"Restart", font:"Courier, monospace", size:40}, "playing", function() {
+  document.addEventListener("pointerlockchange", function start() {
+    if (document.pointerLockElement === canvas) {
+      resetValues();
+      gameState = "playing";
+      mouseDown = false;
+      document.removeEventListener("pointerlockchange", start);
+    }
+  });
+  canvas.requestPointerLock();  
+});
+let nextLevel = new Button(42.5, 70, 15, 10, "rgb(150, 150, 150)", {value:"Next", font:"Courier, monospace", size:50}, "playing", function() {
+  document.addEventListener("pointerlockchange", function start() {
+    if (document.pointerLockElement === canvas) {
+      currentLevel = levelTemplates[levelTemplates.indexOf(currentLevel)+1];
+      resetValues();
+      gameState = "playing";
+      mouseDown = false;
+      document.removeEventListener("pointerlockchange", start);
+    }
+  });
+  canvas.requestPointerLock();  
+});
+let level1Button = new Button(20, 30, 15, 10, "rgb(150, 150, 150)", {value: "Level 1", font: "Courier, monospace", size:20}, "levels", null);
+let level2Button = new Button(42.5, 30, 15, 10, "rgb(150, 150, 150)", {value: "Level 2", font: "Courier, monospace", size:20}, "levels", null);
+let level3Button = new Button(65, 30, 15, 10, "rgb(150, 150, 150)", {value: "Level 3", font: "Courier, monospace", size:20}, "levels", null);
+
+let levelButtons = [level1Button, level2Button, level3Button];
+for (let btn of levelButtons) {
+  btn.props.event = function() {
+    if (!isLoading && levelTemplates[levelButtons.indexOf(btn)] !== undefined) {
+      document.addEventListener("pointerlockchange", function start() {
+        if (document.pointerLockElement === canvas) {
+          currentLevel = levelTemplates[levelButtons.indexOf(btn)];
+          resetValues();
+          canvasDivision = 5;
+          gameState = "playing";
+          mouseDown = false;
+          document.removeEventListener("pointerlockchange", start);
+        }
+      })
+      canvas.requestPointerLock();    
+    }
+  };
+}
 
 let thumbnail = new Image();
-thumbnail.src = "assets/thumb_blurred.png";
+thumbnail.src = "assets/thumbnail.png";
 let logo = new Image();
 logo.src = "assets/logo.png";
 
@@ -878,18 +969,20 @@ function processObj(text) {
   let vertices = text.match(/\nv (.+?) (.+?) (.+)/g);
   vertices = vertices.map(vertex => vertex.match(/ ([-\.\d]+)/g).map(Number));
   let uvCoords = text.match(/\nvt (.+?) (.+)/g);
-  uvCoords = uvCoords.map(uv => uv.match(/ ([-\.\d]+)/g).map(Number));
+  if (uvCoords !== null) uvCoords = uvCoords.map(uv => uv.match(/ ([-\.\d]+)/g).map(Number));
   let shape = new Shape([]);
   let materialSections = text.match(/(usemtl .+)(\n|\r)+((?!usemtl).+?(\n|\r)?)+/g) || [text];
   for (let materialSection of materialSections) {
     let mtl = materialSection.match(/usemtl (.+)(\n|\r)/)?.[1];
-    let polys = materialSection.match(/(\n|\r)f (\d+\/\d+\/\d+ ?)+/g);
+    let polys = materialSection.match(/(\n|\r)f (\d+\/\d*\/\d+ ?)+/g);
 
     for (let poly of polys) {
       let pts = poly.match(/ \d+/g).map(pt => vertices[Number(pt)-1].map(n=>n));
-      let coords = [...poly.matchAll(/ \d+\/(\d+)\//g)].map(n => uvCoords[Number(n[1])-1].map(n=>n));
-      for (let i = 0; i < pts.length; i++) {
-        pts[i].coords = coords[i];
+      if (uvCoords !== null) {
+        let coords = [...poly.matchAll(/ \d+\/(\d+)\//g)].map(n => uvCoords[Number(n[1])-1].map(n=>n));
+        for (let i = 0; i < pts.length; i++) {
+          pts[i].coords = coords[i];
+        }
       }
       pts.mtl = mtl;
       shape.polys.push(pts);
@@ -897,14 +990,6 @@ function processObj(text) {
   }
   
   shape.offset = center(shape.polys.map(center));
-  /*for (let poly of shape.polys) {
-    poly[0].coords = [0, 0];
-    poly[1].coords = [distance(poly[0], poly[1]), 0];
-    for (let i = 1; i < poly.length; i++) {
-      let angle = angleBetween(poly[i], poly[0], poly[1]), dist = distance(poly[i], poly[0]);
-      poly[i].coords = [Math.cos(angle) * dist, Math.sin(angle) * dist];
-    }
-  }*/
   shape.updateCrossProducts();
   return shape;
 }
@@ -915,7 +1000,7 @@ function processMtl(text) {
     let name = material.match(/[\n^] *newmtl (.+)\n/)[1];
     let color = material.match(/\n *Kd ((\d\.?\d*[ \n]){3})/)[1].split(" ").map(n=>256*Number(n));
     materials[name] = color;
-    if (/\nmap_Kd/.test(text)) {
+    if (/\nmap_Kd/.test(material)) {
       let imageFile = material.match(/\nmap_Kd (.+)\n/)[1];
       
       let texture = new Image();
@@ -946,27 +1031,30 @@ document.addEventListener("keyup", function(e) {
 });
 
 //load all objects and materials
-["player", "testmap", "skybox"].forEach(name => {
+["player", "testmap2", "testmap3", "skybox"].forEach(name => {
   fetch("assets/" + name + ".mtl").then(res => res.text()).then(mtl => {
     processMtl(mtl);
   });
 });
 
-let playerTemplate = null, mapTemplate = null, skyboxTemplate = null;
+let playerTemplate = null, skyboxTemplate = null, levelTemplates = [null, null, null];
 Object.defineProperty(window, "isLoading", {
-  get() {return [playerTemplate, mapTemplate].some(template => template === null);},
+  get() {return [playerTemplate, skyboxTemplate].some(template => template === null);},
 });
 
 fetch("assets/player.obj").then(res => res.text()).then(obj => {
   playerTemplate = processObj(obj);
-  if (!isLoading) resetValues();
 });
-fetch("assets/testmap.obj").then(res => res.text()).then(obj => {
-  mapTemplate = processObj(obj);
-  if (!isLoading) resetValues();
+fetch("assets/testmap2.obj").then(res => res.text()).then(obj => {
+  levelTemplates[0] = processObj(obj);
+});
+fetch("assets/testmap3.obj").then(res => res.text()).then(obj => {
+  levelTemplates[1] = processObj(obj);
+});
+fetch("assets/testmap4.obj").then(res => res.text()).then(obj => {
+  levelTemplates[2] = processObj(obj);
 });
 fetch("assets/skybox.obj").then(res => res.text()).then(obj => {
   skyboxTemplate = processObj(obj);
   skyboxTemplate.skybox = true;
-  if (!isLoading) resetValues();
 });
